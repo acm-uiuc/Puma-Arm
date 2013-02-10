@@ -1,18 +1,14 @@
 /*--------------------------------------------------------------*/
-//Revised January 20, 2013
+//Revised February 9, 2013
 //Description:
-//This outputs ePWM1A on GPIO00. The duty cycle is controlled using the result from the ADCA0 off of a potentiometer.
-//When an LED is attached to the ePWM output, the result is controlling the intensity of the LED.
-//This demonstrates the ability to modify the duty cycle of the ePWM module to control the speed of the motor.
+//This outputs ePWM1A and ePWM1B on GPIO00 and GPIO01 respectvely. ePWM1A is used to control the motor in one direction, and ePWM1B is used for the opposite direction. 
+//The duty cycles are controlled using the result from the ADCA0 off of a potentiometer.
+//When an LED is attached to the ePWM1 outputs, the result is controlling the intensity of the LED.
+//This demonstrates the ability to modify the duty cycle of the ePWM1 module to control the motor.
 /*--------------------------------------------------------------*/ 
 
 #include "DSP28x_Project.h"
-
-interrupt void PWM_isr(void);
-void initialize(void);
-void PWMinitialize(void);
-void LEDinitialize(void);
-void ADCinitialize(void);
+#include <math.h>
 
 typedef struct
 {
@@ -26,31 +22,39 @@ typedef struct
    Uint16 EPwmMinCMPB;
 }EPWM_INFO;
 
+interrupt void PWM_isr(void);
+void initialize(void);
+void PWMinitialize(void);
+void LEDinitialize(void); 
+void ADCinitialize(void);
+void update_compare(EPWM_INFO *epwm_info);
+
 // Global variables used in this example
 EPWM_INFO epwm1_info;
 #define EPWM_CMP_DOWN 0
 #define EPWM_CMP_UP 1
-
 // Configure the period for each timer
-#define EPWM1_TIMER_TBPRD  4096  // Period register
-#define EPWM1_MAX_CMPA     4095
-#define EPWM1_MIN_CMPA       5
-
-void update_compare(EPWM_INFO *epwm_info);
+#define EPWM1A_TIMER_TBPRD  4096  // Period register
+#define EPWM1A_MAX_CMPA     4095
+#define EPWM1A_MIN_CMPA       5
+#define EPWM1B_TIMER_TBPRD  4096  // Period register
+#define EPWM1B_MAX_CMPB     4095
+#define EPWM1B_MIN_CMPB       5
 
 // ADC start parameters
-
 #define ADC_MODCLK 0x3 // HSPCLK = SYSCLKOUT/2*ADC_MODCLK2 = 150/(2*3)   = 25.0 MHz
-
 #define ADC_CKPS   0x0   // ADC module clock = HSPCLK/1      = 25.5MHz/(1)   = 25.0 MHz
 #define ADC_SHCLK  0x1   // S/H width in ADC module periods                  = 2 ADC cycle
 //#define AVG        1000  // Average sample limit
 //#define ZOFFSET    0x00  // Average Zero offset
 //#define BUF_SIZE   1024  // Sample buffer size
 
+#define DEADZONE 250
+
 void main(void)
 {
-  InitSysCtrl();	
+	int ADC_value = 2048;
+	InitSysCtrl();	
 	
 	// Specific clock setting for the ADC
    EALLOW;
@@ -105,11 +109,34 @@ void main(void)
 
 // Start SEQ1
    AdcRegs.ADCTRL2.all = 0x2000;
-	
+//===============================================================================
+//Infinite for loop that reads the ADC and sets the compare values	
 		for(;;)
    {
-   	  //Set CMPA value for ePWM signal
-      EPwm1Regs.CMPA.half.CMPA =( (AdcRegs.ADCRESULT0)>>4 );
+   	  //Set CMPA and CMPB values for ePWM1 signals
+   	  ADC_value = ((AdcRegs.ADCRESULT0)>>4);
+   	  //Sets both ePWM signals to zero for deadzone
+   	  if ((ADC_value > (2048-DEADZONE)) && (ADC_value < (2048+DEADZONE)))
+   	  {
+   	  	EPwm1Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
+   	  	EPwm1Regs.CMPB = 0;					//Set EPWM1B to zero
+   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
+   	  }
+   	  //Sets ePWM1A to control motor when ADC is above the deadzone
+   	  if (ADC_value >= (2048+DEADZONE))
+   	  {
+   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm1Regs.CMPB = 0;						//Set ePWM1B to zero
+   	  	EPwm1Regs.CMPA.half.CMPA = ((ADC_value-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
+   	  }
+   	  //Sets ePWM1B to control motor when ADC is below the deadzone
+   	  if (ADC_value <= (2048-DEADZONE))
+   	  {
+   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm1Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
+   	  	EPwm1Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
+   	  }
+//      EPwm1Regs.CMPA.half.CMPA =( (AdcRegs.ADCRESULT0)>>4 );
    }
 }
 
@@ -139,6 +166,7 @@ void ADCinitialize(void)
     
 }
 
+//Not used in this version
 interrupt void PWM_isr(void){
 //	// Update the CMPA values
 //    update_compare(&epwm1_info);
@@ -165,19 +193,21 @@ void LEDinitialize(void){
 // Comment out other unwanted lines.
 
     GpioCtrlRegs.GPAPUD.bit.GPIO0 = 0;    // Enable pull-up on GPIO0 (EPWM1A)
+    GpioCtrlRegs.GPAPUD.bit.GPIO1 = 0;
     
     /* Configure ePWM-1 pins using GPIO regs*/
 // This specifies which of the possible GPIO pins will be ePWM1 functional pins.
 // Comment out other unwanted lines.
 
     GpioCtrlRegs.GPAMUX1.bit.GPIO0 = 1;   // Configure GPIO0 as EPWM1A
+    GpioCtrlRegs.GPAMUX1.bit.GPIO1 = 1;
 }
 
 void PWMinitialize(){
 	
 	// Setup TBCLK
    EPwm1Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Count up
-   EPwm1Regs.TBPRD = EPWM1_TIMER_TBPRD;       // Set timer period
+   EPwm1Regs.TBPRD = EPWM1A_TIMER_TBPRD;       // Set timer period
    EPwm1Regs.TBCTL.bit.PHSEN = 0;    // Disable phase loading
    EPwm1Regs.TBPHS.half.TBPHS = 0x0000;       // Phase is 0
    EPwm1Regs.TBCTR = 0x0000;                  // Clear counter
@@ -186,15 +216,21 @@ void PWMinitialize(){
 
    // Setup shadow register load on ZERO
    EPwm1Regs.CMPCTL.bit.SHDWAMODE = CC_SHADOW;
+   EPwm1Regs.CMPCTL.bit.SHDWBMODE = CC_SHADOW;
    EPwm1Regs.CMPCTL.bit.LOADAMODE = CC_CTR_ZERO;
+   EPwm1Regs.CMPCTL.bit.LOADBMODE = CC_CTR_ZERO;
 
    // Set Compare values
-   EPwm1Regs.CMPA.half.CMPA = EPWM1_MIN_CMPA;    // Set compare A value
+   EPwm1Regs.CMPA.half.CMPA = EPWM1A_MIN_CMPA;    // Set compare A value
+   EPwm1Regs.CMPB = EPWM1B_MIN_CMPB;    // Set compare B value
   
    // Set actions
    EPwm1Regs.AQCTLA.bit.ZRO = AQ_SET;            // Set PWM1A high on Zero
+   EPwm1Regs.AQCTLB.bit.ZRO = AQ_SET;
    EPwm1Regs.AQCTLA.bit.CAU = AQ_CLEAR;          // Clear PWM1A on event A, up count
+   EPwm1Regs.AQCTLB.bit.CBU = AQ_CLEAR;
    EPwm1Regs.AQCTLA.bit.PRD = 1	;			     // Set PWM1A high when CTR=PRD
+   EPwm1Regs.AQCTLB.bit.PRD = 1	;
 
    // Interrupt where we will change the Compare Values
    EPwm1Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
@@ -208,11 +244,12 @@ void PWMinitialize(){
    epwm1_info.EPwm_CMPA_Direction = 1; // Start by increasing CMPA & CMPB
    epwm1_info.EPwmTimerIntCount = 0;             // Zero the interrupt counter
    epwm1_info.EPwmRegHandle = &EPwm1Regs;        // Set the pointer to the ePWM module
-   epwm1_info.EPwmMaxCMPA = EPWM1_MAX_CMPA;      // Setup min/max CMPA/CMPB values
-   epwm1_info.EPwmMinCMPA = EPWM1_MIN_CMPA;
+   epwm1_info.EPwmMaxCMPA = EPWM1A_MAX_CMPA;      // Setup min/max CMPA/CMPB values
+   epwm1_info.EPwmMinCMPA = EPWM1A_MIN_CMPA;
 	
 }
 
+//Not used in this versions
 void update_compare(EPWM_INFO *epwm_info)
 {
    // Every 10'th interrupt, change the CMPA/CMPB values
