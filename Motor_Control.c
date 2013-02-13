@@ -51,9 +51,20 @@ EPWM_INFO epwm1_info;
 
 #define DEADZONE 250
 
+// Functions that will be run from RAM need to be assigned to
+// a different section.  This section will then be mapped using
+// the linker cmd file.
+//#pragma CODE_SECTION(PWM_isr, "ramfuncs");
+
+// These are defined by the linker (see F28335.cmd)
+extern Uint16 RamfuncsLoadStart;
+extern Uint16 RamfuncsLoadEnd;
+extern Uint16 RamfuncsRunStart;
+
 void main(void)
 {
-	int ADC_value = 2048;
+	int ADC_value_0 = 2048;
+	int ADC_value_1 = 2048;
 	InitSysCtrl();	
 	
 	// Specific clock setting for the ADC
@@ -64,6 +75,7 @@ void main(void)
 	// For this case just init GPIO pins for ePWM1, ePWM2, ePWM3
    // These functions are in the DSP2833x_EPwm.c file
    InitEPwm1Gpio();
+   InitEPwm2Gpio();
 	// Clear all interrupts and initialize PIE vector table:
 	//Disable the interrupts
 	DINT;
@@ -98,11 +110,22 @@ void main(void)
 // Enable CPU INT3 which is connected to EPWM1-3 INT:
    IER |= M_INT3;
 
-// Enable EPWM INTn in the PIE: Group 3 interrupt 1-3
-   PieCtrlRegs.PIEIER3.bit.INTx1 = 1;
+// Enable EPWM INTn in the PIE: Group 3 interrupt 1
+//   PieCtrlRegs.PIEIER3.bit.INTx1 = 1;
    
    LEDinitialize();
-    
+
+   // Copy time critical code and Flash setup code to RAM
+// This includes the following ISR functions: epwm1_timer_isr(), epwm2_timer_isr()
+// epwm3_timer_isr and and InitFlash();
+// The  RamfuncsLoadStart, RamfuncsLoadEnd, and RamfuncsRunStart
+// symbols are created by the linker. Refer to the F28335.cmd file.
+   MemCopy(&RamfuncsLoadStart, &RamfuncsLoadEnd, &RamfuncsRunStart);
+
+// Call Flash Initialization to setup flash waitstates
+// This function must reside in RAM
+   InitFlash();
+  
 // Enable global Interrupts and higher priority real-time debug events:
    EINT;   // Enable Global interrupt INTM
    ERTM;   // Enable Global realtime interrupt DBGM
@@ -114,29 +137,51 @@ void main(void)
 		for(;;)
    {
    	  //Set CMPA and CMPB values for ePWM1 signals
-   	  ADC_value = ((AdcRegs.ADCRESULT0)>>4);
+   	  ADC_value_0 = ((AdcRegs.ADCRESULT0)>>4);
+   	  ADC_value_1 = ((AdcRegs.ADCRESULT1)>>4);
    	  //Sets both ePWM signals to zero for deadzone
-   	  if ((ADC_value > (2048-DEADZONE)) && (ADC_value < (2048+DEADZONE)))
+   	  if ((ADC_value_0 > (2048-DEADZONE)) && (ADC_value_0 < (2048+DEADZONE)))
    	  {
    	  	EPwm1Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
    	  	EPwm1Regs.CMPB = 0;					//Set EPWM1B to zero
    	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
    	  }
    	  //Sets ePWM1A to control motor when ADC is above the deadzone
-   	  if (ADC_value >= (2048+DEADZONE))
+   	  if (ADC_value_0 >= (2048+DEADZONE))
    	  {
    	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
    	  	EPwm1Regs.CMPB = 0;						//Set ePWM1B to zero
-   	  	EPwm1Regs.CMPA.half.CMPA = ((ADC_value-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
+   	  	EPwm1Regs.CMPA.half.CMPA = ((ADC_value_0-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
    	  }
    	  //Sets ePWM1B to control motor when ADC is below the deadzone
-   	  if (ADC_value <= (2048-DEADZONE))
+   	  if (ADC_value_0 <= (2048-DEADZONE))
    	  {
    	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
    	  	EPwm1Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
-   	  	EPwm1Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
+   	  	EPwm1Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_0)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
    	  }
-//      EPwm1Regs.CMPA.half.CMPA =( (AdcRegs.ADCRESULT0)>>4 );
+//================================================================================
+if ((ADC_value_1 > (2048-DEADZONE)) && (ADC_value_1 < (2048+DEADZONE)))
+   	  {
+   	  	EPwm2Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
+   	  	EPwm2Regs.CMPB = 0;					//Set EPWM1B to zero
+//   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
+   	  }
+   	  //Sets ePWM1A to control motor when ADC is above the deadzone
+   	  if (ADC_value_1 >= (2048+DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm2Regs.CMPB = 0;						//Set ePWM1B to zero
+   	  	EPwm2Regs.CMPA.half.CMPA = ((ADC_value_1-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
+   	  }
+   	  //Sets ePWM1B to control motor when ADC is below the deadzone
+   	  if (ADC_value_1 <= (2048-DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm2Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
+   	  	EPwm2Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_1)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
+   	  }
+   	  DELAY_US(50);
    }
 }
 
@@ -158,7 +203,9 @@ void ADCinitialize(void)
    AdcRegs.ADCTRL1.bit.CONT_RUN = 1;       // Setup continuous run
 
    AdcRegs.ADCTRL1.bit.SEQ_OVRD = 1;       // Enable Sequencer override feature
-   AdcRegs.ADCCHSELSEQ1.all = 0x0;         // Initialize all ADC channel selects to A0
+   AdcRegs.ADCCHSELSEQ1.all = 0x0;
+   AdcRegs.ADCCHSELSEQ1.bit.CONV00 = 0x0; 
+   AdcRegs.ADCCHSELSEQ1.bit.CONV01 = 0x1;       
    AdcRegs.ADCCHSELSEQ2.all = 0x0;
    AdcRegs.ADCCHSELSEQ3.all = 0x0;
    AdcRegs.ADCCHSELSEQ4.all = 0x0;
@@ -168,15 +215,16 @@ void ADCinitialize(void)
 
 //Not used in this version
 interrupt void PWM_isr(void){
-//	// Update the CMPA values
+	// Update the CMPA values
 //    update_compare(&epwm1_info);
-//	
-//	// Clear INT flag for the timer
-//    EPwm1Regs.ETCLR.bit.INT = 1;
-//    
-//    // Acknowledge this interrupt to receive more interrupts from group 3
-//    PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
-//    
+	GpioDataRegs.GPATOGGLE.bit.GPIO30 = 1;
+	DELAY_US(50000);
+	// Clear INT flag for the timer
+    EPwm1Regs.ETCLR.bit.INT = 1;
+    
+    // Acknowledge this interrupt to receive more interrupts from group 3
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
+    
 }
 
 void LEDinitialize(void){
@@ -185,26 +233,27 @@ void LEDinitialize(void){
    GpioCtrlRegs.GPAMUX2.bit.GPIO30 = 0;
    GpioCtrlRegs.GPADIR.bit.GPIO30 = 1;
    EDIS;
-   GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;
+   GpioDataRegs.GPASET.bit.GPIO30 = 1;
    
-   /* Enable internal pull-up for the selected pins */
-// Pull-ups can be enabled or disabled by the user. 
-// This will enable the pullups for the specified pins.
-// Comment out other unwanted lines.
-
-    GpioCtrlRegs.GPAPUD.bit.GPIO0 = 0;    // Enable pull-up on GPIO0 (EPWM1A)
-    GpioCtrlRegs.GPAPUD.bit.GPIO1 = 0;
-    
-    /* Configure ePWM-1 pins using GPIO regs*/
-// This specifies which of the possible GPIO pins will be ePWM1 functional pins.
-// Comment out other unwanted lines.
-
-    GpioCtrlRegs.GPAMUX1.bit.GPIO0 = 1;   // Configure GPIO0 as EPWM1A
-    GpioCtrlRegs.GPAMUX1.bit.GPIO1 = 1;
+//   /* Enable internal pull-up for the selected pins */
+//// Pull-ups can be enabled or disabled by the user. 
+//// This will enable the pullups for the specified pins.
+//// Comment out other unwanted lines.
+//
+//    GpioCtrlRegs.GPAPUD.bit.GPIO0 = 0;    // Enable pull-up on GPIO0 (EPWM1A)
+//    GpioCtrlRegs.GPAPUD.bit.GPIO1 = 0;
+//    
+//    /* Configure ePWM-1 pins using GPIO regs*/
+//// This specifies which of the possible GPIO pins will be ePWM1 functional pins.
+//// Comment out other unwanted lines.
+//
+//    GpioCtrlRegs.GPAMUX1.bit.GPIO0 = 1;   // Configure GPIO0 as EPWM1A
+//    GpioCtrlRegs.GPAMUX1.bit.GPIO1 = 1;
 }
 
 void PWMinitialize(){
-	
+//==========================================================================
+//Set up ePWM1	
 	// Setup TBCLK
    EPwm1Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Count up
    EPwm1Regs.TBPRD = EPWM1A_TIMER_TBPRD;       // Set timer period
@@ -236,16 +285,45 @@ void PWMinitialize(){
    EPwm1Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO;     // Select INT on Zero event
    EPwm1Regs.ETSEL.bit.INTEN = 1;                // Enable INT
    EPwm1Regs.ETPS.bit.INTPRD = ET_3RD;           // Generate INT on 3rd event
+   
+//=============================================================================
+//Set up ePWM2
+// Setup TBCLK
+   EPwm2Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Count up
+   EPwm2Regs.TBPRD = EPWM1A_TIMER_TBPRD;       // Set timer period
+   EPwm2Regs.TBCTL.bit.PHSEN = 0;    // Disable phase loading
+   EPwm2Regs.TBPHS.half.TBPHS = 0x0000;       // Phase is 0
+   EPwm2Regs.TBCTR = 0x0000;                  // Clear counter
+   EPwm2Regs.TBCTL.bit.HSPCLKDIV = TB_DIV2;   // Clock ratio to SYSCLKOUT
+   EPwm2Regs.TBCTL.bit.CLKDIV = TB_DIV2;
 
-   // Information this example uses to keep track
-   // of the direction the CMPA/CMPB values are
-   // moving, the min and max allowed values and
-   // a pointer to the correct ePWM registers
-   epwm1_info.EPwm_CMPA_Direction = 1; // Start by increasing CMPA & CMPB
-   epwm1_info.EPwmTimerIntCount = 0;             // Zero the interrupt counter
-   epwm1_info.EPwmRegHandle = &EPwm1Regs;        // Set the pointer to the ePWM module
-   epwm1_info.EPwmMaxCMPA = EPWM1A_MAX_CMPA;      // Setup min/max CMPA/CMPB values
-   epwm1_info.EPwmMinCMPA = EPWM1A_MIN_CMPA;
+   // Setup shadow register load on ZERO
+   EPwm2Regs.CMPCTL.bit.SHDWAMODE = CC_SHADOW;
+   EPwm2Regs.CMPCTL.bit.SHDWBMODE = CC_SHADOW;
+   EPwm2Regs.CMPCTL.bit.LOADAMODE = CC_CTR_ZERO;
+   EPwm2Regs.CMPCTL.bit.LOADBMODE = CC_CTR_ZERO;
+
+   // Set Compare values
+   EPwm2Regs.CMPA.half.CMPA = EPWM1A_MIN_CMPA;    // Set compare A value
+   EPwm2Regs.CMPB = EPWM1B_MIN_CMPB;    // Set compare B value
+  
+   // Set actions
+   EPwm2Regs.AQCTLA.bit.ZRO = AQ_SET;            // Set PWM1A high on Zero
+   EPwm2Regs.AQCTLB.bit.ZRO = AQ_SET;
+   EPwm2Regs.AQCTLA.bit.CAU = AQ_CLEAR;          // Clear PWM1A on event A, up count
+   EPwm2Regs.AQCTLB.bit.CBU = AQ_CLEAR;
+   EPwm2Regs.AQCTLA.bit.PRD = 1	;			     // Set PWM1A high when CTR=PRD
+   EPwm2Regs.AQCTLB.bit.PRD = 1	;
+   
+//   // Information this example uses to keep track
+//   // of the direction the CMPA/CMPB values are
+//   // moving, the min and max allowed values and
+//   // a pointer to the correct ePWM registers
+//   epwm1_info.EPwm_CMPA_Direction = 1; // Start by increasing CMPA & CMPB
+//   epwm1_info.EPwmTimerIntCount = 0;             // Zero the interrupt counter
+//   epwm1_info.EPwmRegHandle = &EPwm1Regs;        // Set the pointer to the ePWM module
+//   epwm1_info.EPwmMaxCMPA = EPWM1A_MAX_CMPA;      // Setup min/max CMPA/CMPB values
+//   epwm1_info.EPwmMinCMPA = EPWM1A_MIN_CMPA;
 	
 }
 
