@@ -1,14 +1,17 @@
 /*--------------------------------------------------------------*/
-//Revised February 9, 2013
+//Revised February 16, 2013
 //Description:
-//This outputs ePWM1A and ePWM1B on GPIO00 and GPIO01 respectvely. ePWM1A is used to control the motor in one direction, and ePWM1B is used for the opposite direction. 
-//The duty cycles are controlled using the result from the ADCA0 off of a potentiometer.
-//When an LED is attached to the ePWM1 outputs, the result is controlling the intensity of the LED.
-//This demonstrates the ability to modify the duty cycle of the ePWM1 module to control the motor.
+//This outputs ePWM1 and ePWM2 on GPIO00/GPIO01 and GPIO03/GPIO04 respectvely. 
+//ePWMxA is used to control the motor in one direction, and ePWMxB is used for the opposite direction. 
+//The position of the joint is determined by the poisition of potentiometers from ADCA0/ADCA1.
+//An encoder is used to determine the position of the joint.
+//When an LED is attached to the ePWM outputs, the result is controlling the intensity of the LED.
+//This is setup for controlling two joints.
+//The code is uploaded to the flash memory, so the GPIO84-87 jumpers need to be set high.
 /*--------------------------------------------------------------*/ 
 
 #include "DSP28x_Project.h"
-#include <math.h>
+#include "Example_posspeed.h"
 
 typedef struct
 {
@@ -23,11 +26,14 @@ typedef struct
 }EPWM_INFO;
 
 interrupt void PWM_isr(void);
+interrupt void eQEP_isr(void);
 void initialize(void);
 void PWMinitialize(void);
 void LEDinitialize(void); 
 void ADCinitialize(void);
 void update_compare(EPWM_INFO *epwm_info);
+void potentiometer_compare_speed(void);
+void potentiometer_compare_position(void);
 
 // Global variables used in this example
 EPWM_INFO epwm1_info;
@@ -49,7 +55,7 @@ EPWM_INFO epwm1_info;
 //#define ZOFFSET    0x00  // Average Zero offset
 //#define BUF_SIZE   1024  // Sample buffer size
 
-#define DEADZONE 250
+#define DEADZONE 50
 
 // Functions that will be run from RAM need to be assigned to
 // a different section.  This section will then be mapped using
@@ -61,10 +67,14 @@ extern Uint16 RamfuncsLoadStart;
 extern Uint16 RamfuncsLoadEnd;
 extern Uint16 RamfuncsRunStart;
 
-void main(void)
-{
+// Global variables for eQEP
+POSSPEED qep_posspeed=POSSPEED_DEFAULTS;
+Uint16 Interrupt_Count = 0;
 	int ADC_value_0 = 2048;
 	int ADC_value_1 = 2048;
+
+void main(void)
+{
 	InitSysCtrl();	
 	
 	// Specific clock setting for the ADC
@@ -72,10 +82,12 @@ void main(void)
    SysCtrlRegs.HISPCP.all = ADC_MODCLK;	// HSPCLK = SYSCLKOUT/ADC_MODCLK
    EDIS;
 	
-	// For this case just init GPIO pins for ePWM1, ePWM2, ePWM3
+	// For this case just init GPIO pins for ePWM1, ePWM2, eQEP1 and eQEP2
    // These functions are in the DSP2833x_EPwm.c file
    InitEPwm1Gpio();
    InitEPwm2Gpio();
+   InitEQep1Gpio();
+   InitEQep2Gpio();
 	// Clear all interrupts and initialize PIE vector table:
 	//Disable the interrupts
 	DINT;
@@ -89,6 +101,7 @@ void main(void)
 	//Set pointers to ISR function
 	EALLOW;
 	PieVectTable.EPWM1_INT=&PWM_isr;
+	PieVectTable.EQEP1_INT=&eQEP_isr;
 	EDIS;
 	
 	// only initialize the ePWM
@@ -109,10 +122,14 @@ void main(void)
     // Step 5. User specific code, enable interrupts:
 // Enable CPU INT3 which is connected to EPWM1-3 INT:
    IER |= M_INT3;
+   IER |= M_INT5;
 
 // Enable EPWM INTn in the PIE: Group 3 interrupt 1
-//   PieCtrlRegs.PIEIER3.bit.INTx1 = 1;
-   
+   PieCtrlRegs.PIECTRL.bit.ENPIE = 1;
+   PieCtrlRegs.PIEIER3.bit.INTx1 = 1;
+   PieCtrlRegs.PIEIER5.bit.INTx1 = 1;
+
+   //Sets register values for output pins
    LEDinitialize();
 
    // Copy time critical code and Flash setup code to RAM
@@ -130,61 +147,28 @@ void main(void)
    EINT;   // Enable Global interrupt INTM
    ERTM;   // Enable Global realtime interrupt DBGM
 
+	qep_posspeed.init(&qep_posspeed);
+
 // Start SEQ1
    AdcRegs.ADCTRL2.all = 0x2000;
 //===============================================================================
-//Infinite for loop that reads the ADC and sets the compare values	
-		for(;;)
-   {
-   	  //Set CMPA and CMPB values for ePWM1 signals
-   	  ADC_value_0 = ((AdcRegs.ADCRESULT0)>>4);
-   	  ADC_value_1 = ((AdcRegs.ADCRESULT1)>>4);
-   	  //Sets both ePWM signals to zero for deadzone
-   	  if ((ADC_value_0 > (2048-DEADZONE)) && (ADC_value_0 < (2048+DEADZONE)))
-   	  {
-   	  	EPwm1Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
-   	  	EPwm1Regs.CMPB = 0;					//Set EPWM1B to zero
-   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
-   	  }
-   	  //Sets ePWM1A to control motor when ADC is above the deadzone
-   	  if (ADC_value_0 >= (2048+DEADZONE))
-   	  {
-   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
-   	  	EPwm1Regs.CMPB = 0;						//Set ePWM1B to zero
-   	  	EPwm1Regs.CMPA.half.CMPA = ((ADC_value_0-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
-   	  }
-   	  //Sets ePWM1B to control motor when ADC is below the deadzone
-   	  if (ADC_value_0 <= (2048-DEADZONE))
-   	  {
-   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
-   	  	EPwm1Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
-   	  	EPwm1Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_0)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
-   	  }
-//================================================================================
-if ((ADC_value_1 > (2048-DEADZONE)) && (ADC_value_1 < (2048+DEADZONE)))
-   	  {
-   	  	EPwm2Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
-   	  	EPwm2Regs.CMPB = 0;					//Set EPWM1B to zero
-//   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
-   	  }
-   	  //Sets ePWM1A to control motor when ADC is above the deadzone
-   	  if (ADC_value_1 >= (2048+DEADZONE))
-   	  {
-//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
-   	  	EPwm2Regs.CMPB = 0;						//Set ePWM1B to zero
-   	  	EPwm2Regs.CMPA.half.CMPA = ((ADC_value_1-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
-   	  }
-   	  //Sets ePWM1B to control motor when ADC is below the deadzone
-   	  if (ADC_value_1 <= (2048-DEADZONE))
-   	  {
-//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
-   	  	EPwm2Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
-   	  	EPwm2Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_1)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
-   	  }
-   	  DELAY_US(50);
+//Infinite for loop that sets the PWM outputs by comparing the encoder counts and 
+//potentiometer position	
+	for(;;){
+			if(EQep1Regs.QPOSCNT > (EQep1Regs.QPOSCMP+DEADZONE)){
+				EPwm1Regs.CMPA.half.CMPA = 2048;
+				EPwm1Regs.CMPB = 0;
+			}
+			else if(EQep1Regs.QPOSCNT < (EQep1Regs.QPOSCMP-DEADZONE)){
+				EPwm1Regs.CMPA.half.CMPA = 0;
+				EPwm1Regs.CMPB = 2048;
+			}
+		else{
+				EPwm1Regs.CMPA.half.CMPA = 0;
+				EPwm1Regs.CMPB = 0;
+			}
    }
 }
-
 void ADCinitialize(void)
 {
 	// Step 4. Initialize all the Device Peripherals:
@@ -217,8 +201,14 @@ void ADCinitialize(void)
 interrupt void PWM_isr(void){
 	// Update the CMPA values
 //    update_compare(&epwm1_info);
-	GpioDataRegs.GPATOGGLE.bit.GPIO30 = 1;
-	DELAY_US(50000);
+//	GpioDataRegs.GPATOGGLE.bit.GPIO30 = 1;
+//	DELAY_US(50000);
+	
+	potentiometer_compare_position();
+	
+	// Position and Speed measurement
+   qep_posspeed.calc(&qep_posspeed);
+
 	// Clear INT flag for the timer
     EPwm1Regs.ETCLR.bit.INT = 1;
     
@@ -227,13 +217,27 @@ interrupt void PWM_isr(void){
     
 }
 
+//ISR when QPOSCNT=QPOSCMP
+interrupt void eQEP_isr(){
+	//Clear eQEP gloabal interrupt and position-compare module interrupts
+	EQep1Regs.QCLR.bit.INT = 1;
+	EQep1Regs.QCLR.bit.PCM = 1;
+	PieCtrlRegs.PIEACK.all = PIEACK_GROUP5;
+	//Turn GPIO30 on then off when the encoder count equals the potentiometer value
+	GpioDataRegs.GPASET.bit.GPIO30 = 1;
+	DELAY_US(50000);
+	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;
+	// Position and Speed measurement
+   qep_posspeed.calc(&qep_posspeed);
+}
+
 void LEDinitialize(void){
 	// Configure GPIO30 as a GPIO output pin
    EALLOW;
    GpioCtrlRegs.GPAMUX2.bit.GPIO30 = 0;
    GpioCtrlRegs.GPADIR.bit.GPIO30 = 1;
    EDIS;
-   GpioDataRegs.GPASET.bit.GPIO30 = 1;
+   GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;
    
 //   /* Enable internal pull-up for the selected pins */
 //// Pull-ups can be enabled or disabled by the user. 
@@ -376,3 +380,64 @@ void update_compare(EPWM_INFO *epwm_info)
    return;
 }
 
+void potentiometer_compare_speed(){
+	//Set CMPA and CMPB values for ePWM1 signals
+   	  ADC_value_0 = ((AdcRegs.ADCRESULT0)>>4);
+   	  ADC_value_1 = ((AdcRegs.ADCRESULT1)>>4);
+   	  
+   	  //Sets both ePWM signals to zero for deadzone
+   	  if ((ADC_value_0 > (2048-DEADZONE)) && (ADC_value_0 < (2048+DEADZONE)))
+   	  {
+   	  	EPwm1Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
+   	  	EPwm1Regs.CMPB = 0;					//Set EPWM1B to zero
+//   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
+   	  }
+   	  
+   	  //Sets ePWM1A to control motor when ADC is above the deadzone
+   	  else if (ADC_value_0 >= (2048+DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm1Regs.CMPB = 0;						//Set ePWM1B to zero
+   	  	EPwm1Regs.CMPA.half.CMPA = ((ADC_value_0-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
+   	  }
+   	  
+   	  //Sets ePWM1B to control motor when ADC is below the deadzone
+   	  else if (ADC_value_0 <= (2048-DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm1Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
+   	  	EPwm1Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_0)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
+   	  }
+//================================================================================
+if ((ADC_value_1 > (2048-DEADZONE)) && (ADC_value_1 < (2048+DEADZONE)))
+   	  {
+   	  	EPwm2Regs.CMPA.half.CMPA = 0;		//Set ePWM1A to zero
+   	  	EPwm2Regs.CMPB = 0;					//Set EPWM1B to zero
+//   	  	GpioDataRegs.GPASET.bit.GPIO30 = 1;	//Set GPIO30 pin high to indicate being in the deadzone
+   	  }
+   	  //Sets ePWM1A to control motor when ADC is above the deadzone
+   	  if (ADC_value_1 >= (2048+DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm2Regs.CMPB = 0;						//Set ePWM1B to zero
+   	  	EPwm2Regs.CMPA.half.CMPA = ((ADC_value_1-((float)2048+DEADZONE))/((float)4096-(2048+DEADZONE))*(float)4096);	//Set ePWM1A value when ADC is above deadzone
+   	  }
+   	  //Sets ePWM1B to control motor when ADC is below the deadzone
+   	  if (ADC_value_1 <= (2048-DEADZONE))
+   	  {
+//   	  	GpioDataRegs.GPACLEAR.bit.GPIO30 = 1;	//Set GPIO30 pin low to indicate not being in the deadzone
+   	  	EPwm2Regs.CMPA.half.CMPA = 0;			//Set ePWM1A to zero
+   	  	EPwm2Regs.CMPB = ((((float)2048-DEADZONE)-ADC_value_1)/((float)2048+DEADZONE))*(float)4096;	//Set ePWM1B value when ADC is below the deadzones
+   	  }
+   	  DELAY_US(50);
+}
+
+void potentiometer_compare_position(){
+	//Set CMPA and CMPB values for ePWM1 signals
+   	  ADC_value_0 = ((AdcRegs.ADCRESULT0)>>4);
+   	  ADC_value_1 = ((AdcRegs.ADCRESULT1)>>4);
+   	//Set the encoder compare value based on potentiometer input  
+   	 EQep1Regs.QPOSCMP = (ADC_value_0/(float)4095)*(float)750;
+   	 
+   	 DELAY_US(5);
+}

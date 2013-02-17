@@ -26,11 +26,11 @@
 <option id="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.FLOAT_SUPPORT.646658297" superClass="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.FLOAT_SUPPORT" value="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.FLOAT_SUPPORT.fpu32" valueType="enumerated"/>
 <option id="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.INCLUDE_PATH.1032090781" superClass="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.INCLUDE_PATH" valueType="includePath">
 <listOptionValue builtIn="false" value="&quot;${XDAIS_CG_ROOT}/packages/ti/xdais&quot;"/>
-<listOptionValue builtIn="false" value="&quot;${workspace_loc:/PUMA Robot Arm/Include Files}&quot;"/>
-<listOptionValue builtIn="false" value="&quot;${INSTALLROOT_2833X_TO_IQMATH}/v15c/include&quot;"/>
-<listOptionValue builtIn="false" value="&quot;${INSTALLROOT_2833X_TO_FASTRTS}/v100/include&quot;"/>
-<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${workspace_loc:/PUMA Robot Arm/include}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${workspace_loc:/PUMA Robot Arm/include/headers}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${workspace_loc:/PUMA Robot Arm/include/compilier include}&quot;"/>
 </option>
+<option id="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.NO_INTRINSICS.474245019" superClass="com.ti.ccstudio.buildDefinitions.C2000_5.2.compilerID.NO_INTRINSICS" value="false" valueType="boolean"/>
 </tool>
 <tool id="com.ti.ccstudio.buildDefinitions.C2000_5.2.exe.linkerDebug.382225600" name="C2000 Linker" superClass="com.ti.ccstudio.buildDefinitions.C2000_5.2.exe.linkerDebug">
 <option id="com.ti.ccstudio.buildDefinitions.C2000_5.2.linkerID.STACK_SIZE.1709926428" superClass="com.ti.ccstudio.buildDefinitions.C2000_5.2.linkerID.STACK_SIZE" value="0x300" valueType="string"/>
@@ -87,6 +87,7 @@
 <listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
 </option>
 </tool>
+<macros/>
 </toolChain>
 </configuration>
 <macros/>
